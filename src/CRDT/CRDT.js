@@ -2,11 +2,12 @@ import Char from './Char';
 import Identifier from './Identifier';
 
 class CRDT{
-  constructor(siteID){
+  constructor(siteID, vectorClock){
     this.boundary = 10;
     this.base = 32;
     this.text = '';
     this.siteID = siteID;
+    this.vectorClock = vectorClock;
     this.boundaryStrategy = new Map();
     this.editorEntries = [];
   }
@@ -93,30 +94,26 @@ class CRDT{
     return index;
   }
 
-  insertCharacter(value, index){
+  insertCharacter(value, index, ){
+    this.vectorClock.increment();
+
     let successorID = this.getSuccessorID(index)
     let predecessorID = this.getPredecessorID(index)
 
     let newID = this.allocateIdBetween(predecessorID, successorID);
-    let char = new Char(value, newID, this.siteID);
+    let localEventCount = this.vectorClock.localClock.eventCount;
+
+    let char = new Char(value, localEventCount, newID, this.siteID);
 
     this.editorEntries.splice(index, 0, char);
-    return {
-      insert: {
-        char,
-        source: this.siteID,
-      }
-    };
+    return char;
   }
 
   deleteCharacter(index){
-    var deletedElement = this.editorEntries.splice(index, 1)[0];
-    return {
-      delete: {
-        deletedElement,
-        source: this.siteID,
-      }
-    };
+    this.vectorClock.increment();
+
+    let char = this.editorEntries.splice(index, 1)[0];
+    return char;
   }
 
   allocateIdBetween(predecessorID, successorID){

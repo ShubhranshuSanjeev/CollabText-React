@@ -1,8 +1,9 @@
 class Char{
-  constructor(value, identifier, siteID){
+  constructor(value, eventCount, identifier, siteID){
     this.value = value;
-    this.identifier = identifier;
     this.siteID = siteID;
+    this.eventCount = eventCount;
+    this.identifier = identifier;
   }
 
   compareTo(otherChar){

@@ -5,6 +5,7 @@ import socketIO from "socket.io-client";
 import Char from "../CRDT/Char";
 import CRDT from "../CRDT/CRDT";
 import Identifier from "../CRDT/Identifier";
+import VectorClock from "../VectorClock/VectorClock";
 
 import 'react-quill/dist/quill.snow.css';
 import './editor.css';
@@ -20,51 +21,25 @@ class Editor extends Component{
     this.quillRef = null;
     this.reactQuillRef = null;
     this.crdt = null;
+    this.vectorClock = null;
+    this.deleteBuffer = [];
 
     this.state = {
       htmlText: '' ,
       plainText: '',
     };
   }
-
   componentDidMount(){
     this.socket = socketIO(this.endpoint);
 
     this.socket.on('siteid', data => {
       console.log(data);
       this.siteID = data.siteID;
-      this.crdt = new CRDT(this.siteID);
+      this.vectorClock = new VectorClock(this.siteID);
+      this.crdt = new CRDT(this.siteID, this.vectorClock);
     });
 
-    this.socket.on('insert', data => {
-      data = JSON.parse(data).insert;
-      const { source, char } = data;
-      if(source === this.siteID){
-        return;
-      }
-
-      const identifier = char.identifier.map(entry => new Identifier(entry.id, entry.siteID));
-      const newChar = new Char(char.value, identifier, data.siteID);
-
-      const position = this.crdt.insertRemoteCharacter(newChar);
-      this.insertCharIntoEditor(newChar.value, position);
-    });
-
-    this.socket.on('delete', data => {
-      data = JSON.parse(data).delete;
-      const { deletedElement, source } = data;
-      if(source === this.siteID){
-        return;
-      }
-
-      console.log(deletedElement);
-
-      const identifier = deletedElement.identifier.map(entry => new Identifier(entry.id, entry.siteID));
-      const char = new Char(deletedElement.value, identifier, data.siteID);
-
-      const position = this.crdt.deleteRemoteCharacter(char);
-      this.deleteCharFromEditor(char.value, position);
-    });
+    this.socket.on('operation', operation => this.handleRemoteOperation(operation));
 
     this.attachQuillRefs();
   }
@@ -81,15 +56,66 @@ class Editor extends Component{
     if (quillRef != null) this.quillRef = quillRef;
   }
 
-  sendInsertOperation(operation) {
-    const data = JSON.stringify(operation);
-    this.socket.emit('insert', data);
+  applyRemoteOperation(char, type, clock){
+    const identifier = char.identifier.map(entry => new Identifier(entry.id, entry.siteID));
+    const charCopy = new Char(char.value, char.eventCount, identifier, char.siteID);
+
+    if(type === 'insert'){
+      const position = this.crdt.insertRemoteCharacter(charCopy);
+      this.insertCharIntoEditor(charCopy.value, position);
+    }
+    else if(type === 'delete'){
+      const position = this.crdt.deleteRemoteCharacter(charCopy);
+      this.deleteCharFromEditor(charCopy.value, position);
+    }
+
+    this.vectorClock.update(clock);
   }
 
-  sendDeleteOperation(operation) {
-    const data = JSON.stringify(operation);
-    this.socket.emit('delete', data);
+  handleRemoteOperation(operation){
+    operation = JSON.parse(operation);
+    const { type, char, source, clock } = operation;
+
+    if(source === this.siteID){
+      return;
+    }
+
+    if(type === 'insert'){
+      this.applyRemoteOperation(char, type, clock);
+    }
+    else if(type === 'delete'){
+      this.deleteBuffer.push(operation);
+    }
+
+    this.processDeleteBuffer();
   }
+
+  processDeleteBuffer() {
+    let i = 0;
+    let operation;
+
+    while(i < this.deleteBuffer.length){
+      operation = this.deleteBuffer[i];
+
+      if(this.hasInsertOperationCompleted(operation)){
+        this.applyRemoteOperation(operation.char, operation.type, operation.clock);
+        this.deleteBuffer.splice(i, 1);
+      }
+      else {
+        i++;
+      }
+    }
+  }
+
+  hasInsertOperationCompleted(operation){
+    let operationClockSnapshot = {
+      siteID: operation.char.siteID,
+      eventCount: operation.char.eventCount
+    };
+
+    return this.vectorClock.hasBeenApplied(operationClockSnapshot);
+  }
+
 
   deleteCharFromEditor(val, position){
     this.quillRef.deleteText(position, 1, 'silent');
@@ -99,22 +125,34 @@ class Editor extends Component{
     this.quillRef.insertText(poisition, val, 'silent');
   }
 
+
+  sendOperation(char, type){
+    const data = {
+      type: type,
+      char: char,
+      source: this.siteID,
+      clock: this.vectorClock.getLocalClock()
+    }
+
+    this.socket.emit('operation', JSON.stringify(data));
+  }
+
   handleInsertOperation(index, content){
     const contentLength = content.length;
     for(let idx = 0; idx < contentLength; idx++){
       let insertPosition = idx + index;
-      const data = this.crdt.insertCharacter(content[idx], insertPosition);
+      const char = this.crdt.insertCharacter(content[idx], insertPosition);
 
-      this.sendInsertOperation(data);
+      this.sendOperation(char, 'insert');
     }
   }
 
   handleDeleteOperation(index, length){
     for(let idx = 0; idx < length; idx++){
       let deletePosition = index;
-      const data = this.crdt.deleteCharacter(deletePosition);
+      const char = this.crdt.deleteCharacter(deletePosition);
 
-      this.sendDeleteOperation(data);
+      this.sendOperation(char, 'delete');
     }
   }
 
